@@ -90,7 +90,7 @@ You may compare the printed results with those in Table 2 in the paper.
 
 
 ### End-to-end Performance of SD2
-As FISEdit requires a customized environment to execute, we have preconfigured the environment to evaluate the performance of SD2 directly on the machine (not using a Docker container).
+As FISEdit requires a customized environment to execute, we have preconfigured the environment to evaluate the performance of SD2 directly on the machine (not using a Docker container). We configured the FISEdit environment following this link: https://github.com/Hankpipi/diffusers-hetu. The `hetu.exp` mentioned later in the script is the inference engine used by FISEdit.
 Please log out and re-log in to the machine for the following evaluation.
 
 ```bash
