@@ -4,6 +4,15 @@ This guide provides step-by-step instructions to reproduce the experiments and r
 To simplify reproducibility, we provide an off-the-shelf Docker image, `jiangxiaoxiao/flashps` which includes all the dependencies and configurations required to run the experiments. This eliminates the need for complex environment setup. 
 We also provide an AWS EC2 instance with **A10 GPUs**.
 Please comment on us in the HotCRP with your public key to get the IP address and access the machine.
+### Environment Setup
+You can refer to these commands to build the test environment in Docker.
+```bash
+conda create -n flashps python=3.10
+conda activate flashps
+pip install -r requirements.txt
+
+cd diffusers && pip install -e .
+```
 
 ### Run FlashPS with Docker
 We have pulled the image on the provided machine, as its size is nearly 100 GiB.
