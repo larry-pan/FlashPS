@@ -4,13 +4,19 @@ This guide provides step-by-step instructions to reproduce the experiments and r
 To simplify reproducibility, we provide an off-the-shelf Docker image, `jiangxiaoxiao/flashps` which includes all the dependencies and configurations required to run the experiments. This eliminates the need for complex environment setup. 
 We also provide an AWS EC2 instance with **A10 GPUs**.
 Please comment on us in the HotCRP with your public key to get the IP address and access the machine.
-### Environment Setup
-You can refer to these commands to build the test environment in Docker.
+### Docker and Environment Setup
+You can refer to these commands to build the Docker and set the conda environment.
+First, use the image `pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel` as the base image, then configure the conda environment within this image.
+
+
 ```bash
+# Create conda env
 conda create -n flashps python=3.10
 conda activate flashps
+# Git clone this repo
+git clone https://github.com/Sylvia-16/FlashPS.git
 pip install -r requirements.txt
-
+# Install our customized diffusers package
 cd diffusers && pip install -e .
 ```
 
