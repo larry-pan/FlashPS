@@ -5,8 +5,7 @@ To simplify reproducibility, we provide an off-the-shelf Docker image, `jiangxia
 We also provide an AWS EC2 instance with **A10 GPUs**.
 Please comment on us in the HotCRP with your public key to get the IP address and access the machine.
 ### Docker and Environment Setup
-You can refer to these commands to build the Docker and set the conda environment.
-First, use the image `pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel` as the base image, then configure the conda environment within this image.
+You can refer to these commands to build the Docker environment and set up the conda environment. First, use the image `pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel` as the base image, then configure the conda environment within this image.
 
 
 ```bash
