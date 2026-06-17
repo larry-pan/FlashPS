@@ -201,3 +201,7 @@ scheduler/test_batch_logs/*
 *.pt
 *.jpg
 *.pid
+
+# FlashPS wrapper dev artifacts
+.venv_wrapper/
+scheduler/flashps_runs/

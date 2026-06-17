@@ -1,0 +1,13 @@
+# Flux_inpaint cache config for the FlashPS server.
+#
+# These folders only need to EXIST for the server to boot — load_cache_kv() does
+# os.listdir() on them, so an empty folder is fine (it just means no preloaded
+# cache, which is all a non-edit / cache-off run needs).
+#
+# For cache-ON (edit / partial-sampling) serving, populate them first with a
+# save_kv + save_latents precompute run, then restart the server so it loads them.
+#
+# Paths are relative to scheduler/ (where server.py runs). run_server_flux.sh
+# creates them before launch.
+cached_kv_folder: "flux_cache/cached_kv"
+cached_latents_folder: "flux_cache/cached_latents"

@@ -1,0 +1,40 @@
+# Real (non-stubbed) cached-edit config for the FlashPS Flux_inpaint SERVER path.
+#
+# This drives an EDIT that actually reuses the unmasked-region K/V from cache
+# (partial sampling). It only produces a usable image via the server's async path;
+# the standalone smoke/timing pipeline zero-stubs KV regardless of these flags.
+#
+# Prerequisites (see the runbook / flux_tryon_demo.py --kv-dir/--latents-dir):
+#   - flux_cache/cached_kv     populated with real k_*.pt / v_*.pt   (save_kv precompute)
+#   - flux_cache/cached_latents populated with latents_*.pt          (save_latents precompute)
+#   - the precompute used the SAME steps (4), size (1024), text_length (512) as here.
+
+launch_script: "run_edit.py"
+num_inference_steps: 4          # MUST equal the precompute run's steps (KV/latents are per-step)
+
+use_cached_kv: True             # reuse unmasked K/V -> only masked tokens get full compute
+use_cached_o: False
+
+# CRITICAL: async_copy=True routes to the real cache path
+# (attention_processor_short.py:1327 -> transformer_flux._copy_cache_buffers ->
+#  current_key_cache). async_copy=False hits the zero-stub branch (L1292-1324) => garbage.
+async_copy: True
+
+# test_seqlen=False => use the REAL torso mask from the request.
+# test_seqlen=True  => ignore the mask, synthesize a mask of `generated_seqlen` tokens
+#                      (timing-only; image is meaningless).
+test_seqlen: False
+generated_seqlen: 4096          # ignored when test_seqlen is False
+
+save_kv: False
+save_o: False
+save_latents: False
+
+# Relative to scheduler/ (where server.py runs). Must match flux_cache_config.yml.
+cached_kv_folder: "flux_cache/cached_kv"
+cached_latents_folder: "flux_cache/cached_latents"
+
+use_flash_attn_rope: True       # cache/edit path uses cache-only cos/sin rope
+prompt: "a full-body studio fashion photograph of a young woman with very short cropped dark hair, standing against a warm beige seamless backdrop, wearing a black graphic t-shirt printed with a grayscale portrait and bold white slogan text across the chest, tucked into a white high-waisted pencil skirt, soft even studio lighting, photorealistic, sharp focus, high detail"
+device_num: 0
+seed: 0

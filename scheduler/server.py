@@ -2294,14 +2294,19 @@ if __name__ == "__main__":
                        help="Scheduling strategy: batch_balance (balance batch counts), seq_length_balance (balance sequence lengths), flops_balance (balance computational load), or no_cb (disable continuous batching)")
     parser.add_argument("--worker-max-batch-size", type=int, default=8)
     parser.add_argument("--pipeline-name", type=str, default="SDXL", choices=["SDXL", "Flux_inpaint", "SD2", "OOTD_HD", "OOTD_DC"])
-    
+    parser.add_argument("--cache-config", type=str, default=None,
+                       help="Path to a cache-config yaml; overrides the per-pipeline default")
+
     args = parser.parse_args()
-    if args.pipeline_name == "SD2":
-        args.cache_config = "/home/xjiangbp/image-inpainting/scheduler/cache_configs/sd2_cache_config.yml"
-    elif args.pipeline_name == "OOTD_HD" or args.pipeline_name == "OOTD_DC":
-        args.cache_config = "/app/image-inpainting/scheduler/cache_configs/ootd_cache_config.yml"
-    else:
-        args.cache_config = "/app/image-inpainting/scheduler/cache_configs/ootd_cache_config.yml"
+    if args.cache_config is None:
+        if args.pipeline_name == "SD2":
+            args.cache_config = "/home/xjiangbp/image-inpainting/scheduler/cache_configs/sd2_cache_config.yml"
+        elif args.pipeline_name == "OOTD_HD" or args.pipeline_name == "OOTD_DC":
+            args.cache_config = "/app/image-inpainting/scheduler/cache_configs/ootd_cache_config.yml"
+        elif args.pipeline_name == "Flux_inpaint":
+            args.cache_config = "cache_configs/flux_cache_config.yml"
+        else:
+            args.cache_config = "/app/image-inpainting/scheduler/cache_configs/ootd_cache_config.yml"
     print("schedule_baseline", args.scheduling_baseline)
     # Load DistributedConfig from YAML
     with open(args.config, "r") as f:
