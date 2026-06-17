@@ -1,0 +1,19 @@
+launch_script: "run_edit.py"
+num_inference_steps: 4
+
+use_cached_kv: False
+use_cached_o: False
+test_seqlen: True
+generated_seqlen: 4096
+
+save_kv: False
+save_o: False
+save_latents: False
+
+cached_kv_folder: "/app/image-inpainting/flux_cache/cached_kv"
+cached_latents_folder: "/app/image-inpainting/flux_cache/cached_latents"
+
+prompt: "a photo"
+async_copy: True
+device_num: 0
+seed: 1449
