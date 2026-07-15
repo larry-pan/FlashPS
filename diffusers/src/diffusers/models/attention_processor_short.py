@@ -1289,7 +1289,18 @@ class FluxAttnProcessor2_0:
                     #     # ][0],
                     #     dtype=torch.bfloat16,
                     # ).cuda(edit_config.device_num)
-                    self.cache_value = torch.zeros((1,4096,3072), dtype=torch.bfloat16).cuda(edit_config.device_num)
+                    # Single blocks (encoder_hidden_states is None) write text+latents into ONE
+                    # cache buffer via mask_indice, which in the batched varlen path strides by
+                    # 512 (text) + image_seqlen per item -- so the per-item buffer length must be
+                    # 512 + image_seqlen or index_copy_ runs off the end (device-side assert). mmdit
+                    # blocks cache only latents (text is concatenated separately) and keep
+                    # image_seqlen. The batch=1 fixed-length path is unchanged: with one item there
+                    # is no cross-item stride and 512+active <= image_seqlen keeps mask_indice in range.
+                    if edit_config.test_varlen and encoder_hidden_states is None:
+                        _cache_len = 512 + edit_config.image_seqlen
+                    else:
+                        _cache_len = edit_config.image_seqlen
+                    self.cache_value = torch.zeros((1, _cache_len, 3072), dtype=torch.bfloat16).cuda(edit_config.device_num)
 
                     # if batch size > 1, repeat the basic shape
                     if batch_size > 1:
@@ -1469,9 +1480,16 @@ class FluxAttnProcessor2_0:
                     max_batch_size = edit_config.max_batch_size
                 else:
                     max_batch_size = edit_config.batch_size
-                if not hasattr(self, "_query"):
+                # Resolution-aware _query scratch buffer. It holds the concatenated
+                # [text(512) + full image tokens] queries for every batch item, so its size is
+                # max_batch_size * (512 + image_seqlen). Was hardcoded max_batch_size*4608
+                # (4608 = 512 + 4096 tokens = 1024^2 only). The buffer is reused across cells and
+                # never shrinks, so (re)allocate whenever the current cell needs more rows than we
+                # have -- this makes it grow for larger resolutions/batches later in a sweep.
+                needed_query_rows = max_batch_size * (512 + edit_config.image_seqlen)
+                if not hasattr(self, "_query") or self._query.shape[0] < needed_query_rows:
                     self._query = torch.zeros(
-                        (max_batch_size*4608, attn.heads, head_dim),
+                        (needed_query_rows, attn.heads, head_dim),
                         dtype=query.dtype,
                     ).cuda(edit_config.device_num)
 

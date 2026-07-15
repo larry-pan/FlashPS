@@ -903,6 +903,8 @@ class FluxInpaintPipeline(DiffusionPipeline, FluxLoraLoaderMixin, FluxIPAdapterM
             )
             for i in range(batch_size):
                 valid_latents_mask[i, : edit_config.generated_seqlen] = 1
+        # Resolution-aware cache-buffer size = full image token count (= (size//16)^2; 4096 @ 1024^2).
+        edit_config.image_seqlen = valid_latents_mask.shape[-1]
         # Create text mask of constant length
         text_length = 512
         text_mask = torch.ones((text_length), dtype=valid_latents_mask.dtype).cuda(
@@ -1541,8 +1543,14 @@ class FluxInpaintPipeline(DiffusionPipeline, FluxLoraLoaderMixin, FluxIPAdapterM
                         cached_noise_pred.index_copy_(
                             0, edit_config.latents_mask_indice, noise_pred
                         )
+                        # Reshape back with edit_config.batch_size (the actual latent batch, =
+                        # batch_size*num_images_per_prompt, which the tensor was just repeated by),
+                        # NOT the local `batch_size` (= prompt count). They differ whenever
+                        # num_images_per_prompt>1: using the local one folds the batch into the
+                        # channel dim (e.g. (2,1024,64)->view(1,1024,128)) and scheduler.step then
+                        # size-mismatches the latents.
                         cached_noise_pred = cached_noise_pred.view(
-                            (batch_size, latents_shape, -1)
+                            (edit_config.batch_size, latents_shape, -1)
                         )
                     else:
                         cached_noise_pred.index_copy_(

@@ -74,6 +74,9 @@ class EditConfig:
         self.test_rope = config_file.get("test_rope", False)
         self.test_seqlen = config_file.get("test_seqlen", False)
         self.generated_seqlen = config_file.get("generated_seqlen", None)
+        # full image token count = cache-buffer size for partial sampling (resolution-aware).
+        # 4096 at 1024^2; the pipeline overwrites this from the real mask in _setup_caching_configuration.
+        self.image_seqlen = config_file.get("image_seqlen", 4096)
 
         self.model_path = config_file.get("model_path", "")
         self.cloth_path = config_file.get("cloth_path", "")

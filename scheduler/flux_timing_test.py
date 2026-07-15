@@ -26,7 +26,8 @@ def _synth_inputs(size: int):
 
 
 def _make_edit_config(EditConfig, *, steps, prompt, use_cached_kv, generated_seqlen,
-                      save_latents=False, cached_latents_folder=""):
+                      save_latents=False, cached_latents_folder="",
+                      test_varlen=False, max_batch_size=1):
     return EditConfig({
         "launch_script": "run_edit.py",
         "num_inference_steps": steps,
@@ -37,10 +38,14 @@ def _make_edit_config(EditConfig, *, steps, prompt, use_cached_kv, generated_seq
         "test_seqlen": bool(use_cached_kv),
         "generated_seqlen": generated_seqlen,
         "cached_latents_folder": cached_latents_folder,
-        "test_varlen": False,
+        # test_varlen routes cached partial sampling through the variable-length (batched) cache
+        # path; max_batch_size pre-sizes the persistent _query / cache buffers to the largest batch
+        # so the once-allocated buffers are big enough for every later cell (they never resize).
+        "test_varlen": test_varlen,
         "real_varlen": False,
         "async_copy": False,
         "batch_size": 1,
+        "max_batch_size": max_batch_size,
         "device_num": 0,
         "prompt": prompt,
     })

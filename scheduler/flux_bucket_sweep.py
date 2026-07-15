@@ -9,17 +9,28 @@ batch sizes and resolutions. For each (resolution, batch, coverage bucket):
                scales with active tokens = coverage x full_tokens(resolution).
   speedup_vs_full = full_ms / partial_ms.
 
-IMPORTANT (vendored-code constraint): the cached path's KV buffer is hardcoded to 1024^2 (4096
-tokens) in attention_processor_short.py:1292, so partial latency is only MEASURED at 1024^2. At
-512^2 / 768^2 partial_ms and speedup are left n/a (only full_ms is reported there). Also the
-partial timing path is stubbed-KV, so its *image* is meaningless -- we only take the *latency*
-(which is real).
+The cached KV buffer is now RESOLUTION-AWARE (edit_config.image_seqlen = full image tokens,
+set from the real mask in the pipeline; attention_processor_short.py:1292), so partial latency is
+MEASURED at every resolution. Per-resolution cap: text(512) + active_tokens <= full_tokens(size)
+(so at 512^2 coverage <= ~0.5, 768^2 <= ~0.78, 1024^2 <= ~0.875); buckets above the cap show
+n/a (buffer overflow). The partial timing path is stubbed-KV, so its *image* is meaningless -- we
+only take the *latency* (which is real).
 
 token math: 1 token = 16x16 px patch. full_tokens = (size//16)^2  (512->1024, 768->2304,
 1024->4096). Partial buffer constraint: 512 (text) + active_tokens <= 4096.
 
-Batch>1 needs per-(resolution,batch) reference latents; we precompute them (a full run at that
-resolution and batch). If the cached+batch forward still fails it is recorded FAILED, not fatal.
+Batch axis: full_ms is measured at every batch (shows batch scaling). partial_ms is measured at
+every batch too, via TWO cache paths:
+  * batch=1 -> fixed-length cache path (_setup_fixed_length_caching; validated on GPU).
+  * batch>1 -> variable-length batched path (test_varlen=True, _setup_variable_length_caching;
+    builds per-item offset indices + flash_attn_varlen_func). Cached latents are precomputed once
+    per resolution at batch=1 and replicated per item by the pipeline (pipeline:1537). The batched
+    query buffer was made resolution-aware (max_batch*(512+image_seqlen), grows across cells,
+    attention_processor_short.py:~1474), so batched partial works at ANY resolution -- bounded only
+    by GPU memory (large res*batch cells that OOM are caught as FAILED).
+NOTE: the standalone varlen path is untested end-to-end (the repo exercises it via the server/async
+path), so batch>1 cells may come back FAILED; if so, full_ms is still recorded and the cell is
+marked rather than crashing the sweep.
 
 Run on the GPU box, from scheduler/ (auto-picks a free GPU):
   python flux_bucket_sweep.py --model <snapshot> --out-dir out_buckets \
@@ -32,7 +43,12 @@ import argparse
 import os
 import sys
 import time
+import traceback
 import types
+
+# FLUX_DEBUG=1 -> print the full traceback when a cell fails (and flux_mask_sweep stops swallowing
+# the vendored per-block shape prints), so shape/index errors are visible instead of "FAILED".
+_DEBUG = bool(os.environ.get("FLUX_DEBUG"))
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
@@ -43,8 +59,8 @@ import flux_tryon_demo as demo  # noqa: E402  (_torso_mask, _full_mask, _neutral
 import flux_mask_sweep as fms   # noqa: E402  (_time_forward, _white_frac, _setup_visible_devices, _dir_masks)
 
 TEXT_SEQLEN = ft.TEXT_SEQLEN   # 512
-CACHE_BUF = 4096               # hardcoded KV buffer (1024^2 tokens)
-BUFFER_RES = 1024              # resolution the cache buffer matches -> partial measurable here only
+# Cache buffer is now resolution-aware (edit_config.image_seqlen = full image tokens), so partial
+# is measurable at every resolution. Per-resolution cap: text(512) + active <= full_tokens(size).
 
 
 def _full_tokens(size):
@@ -65,16 +81,21 @@ def _coverages(min_c, max_c, step):
 
 # --- timing (reuses fms._time_forward for the batched forward) --------------------------------
 
-def _precompute(pipe, image, mask, EditConfig, *, size, steps, batch, prompt, folder):
-    """Full reference run at (size, batch) with save_latents -> {latents_i} (batch-B tensors)."""
+def _precompute(pipe, image, mask, EditConfig, *, size, steps, prompt, folder):
+    """Full reference run at (size, batch=1) with save_latents -> {latents_i} (single-item tensors).
+
+    ALWAYS batch=1: the cache path repeats these per batch item
+    (pipeline_flux_inpaint.py:1537 `cached_noise_pred.repeat(batch_size, 1, 1)`), so the stored
+    latents must be a single item or the repeat/view math is wrong at batch>1.
+    """
     import torch
     os.makedirs(folder, exist_ok=True)
     cfg = ft._make_edit_config(EditConfig, steps=steps, prompt=prompt, use_cached_kv=False,
                                generated_seqlen=_full_tokens(size), save_latents=True,
                                cached_latents_folder=folder)
-    cfg.batch_size = batch
+    cfg.batch_size = 1
     fms._time_forward(pipe, image, mask, cfg, size=size, steps=steps, strength=1.0,
-                      batch=batch, repeats=1, warmup=0)  # one call; saves latents_i.pt
+                      batch=1, repeats=1, warmup=0)  # one call; saves latents_i.pt
     return {f"latents_{i}": torch.load(os.path.join(folder, f"latents_{i}.pt"))
             for i in range(steps)}
 
@@ -88,21 +109,29 @@ def _measure_full(pipe, image, mask, EditConfig, args, *, size, batch):
                                  strength=1.0, batch=batch, repeats=args.repeats,
                                  warmup=args.warmup), "ok"
     except Exception as e:  # noqa: BLE001
+        if _DEBUG:
+            traceback.print_exc()
         return None, f"FAILED: {type(e).__name__}"
 
 
 def _measure_partial(pipe, image, mask, EditConfig, args, *, size, batch, active_tokens,
-                     cached_latents, folder):
+                     cached_latents, folder, varlen, max_batch):
+    """Partial-sampling latency. batch=1 uses the fixed-length cache path (validated); batch>1
+    uses the variable-length (batched) path via test_varlen=True. max_batch pre-sizes the
+    persistent _query buffer to the largest batch in the sweep."""
     cfg = ft._make_edit_config(EditConfig, steps=args.steps, prompt=args.edit_prompt,
                                use_cached_kv=True, generated_seqlen=active_tokens,
-                               cached_latents_folder=folder)
+                               cached_latents_folder=folder, test_varlen=varlen,
+                               max_batch_size=max_batch)
     cfg.cached_latents = cached_latents
     cfg.batch_size = batch
     try:
         return fms._time_forward(pipe, image, mask, cfg, size=size, steps=args.steps,
                                  strength=1.0, batch=batch, repeats=args.repeats,
                                  warmup=args.warmup), "ok"
-    except Exception as e:  # noqa: BLE001  (cached+batch>1 untested -> record & move on)
+    except Exception as e:  # noqa: BLE001  (varlen batched is untested standalone -> record & move on)
+        if _DEBUG:
+            traceback.print_exc()
         return None, f"FAILED: {type(e).__name__}"
 
 
@@ -132,8 +161,12 @@ def _write_report(rows, csv_path):
                 return f"{v:.4f}" if isinstance(v, float) else str(v)
             f.write(",".join(_fmt(r[c]) for c in cols) + "\n")
     print(f"\n[bucket] wrote {csv_path}")
-    print("[bucket] full_ms measured at all resolutions; partial_ms/speedup MEASURED only at "
-          "1024^2 (cache buffer hardcoded to 1024^2) -> n/a at 512/768. speedup=full_ms/partial_ms.")
+    print("[bucket] full_ms measured at all resolutions & batches. partial_ms: batch=1 via the "
+          "fixed-length cache path (validated); batch>1 via the variable-length batched path "
+          "(test_varlen=True) with a resolution-aware query buffer -> works at any resolution "
+          "(large res*batch may OOM -> FAILED). speedup=full_ms/partial_ms. Buckets past "
+          "512+active>full_tokens(size) are n/a (buffer overflow): ~cov>0.5 @512, >0.75 @768, "
+          ">0.85 @1024.")
 
 
 def main():
@@ -182,43 +215,44 @@ def main():
     pipe = FluxInpaintPipeline.from_pretrained(args.model, **kw).to("cuda:0")
     print(f"[bucket] model ready in {time.time() - t0:.1f}s\n")
 
+    max_batch = max(batches)  # pre-size the persistent varlen _query buffer for the whole sweep
+    # The batched varlen _query buffer is now resolution-aware (max_batch*(512+image_seqlen),
+    # attention_processor_short.py:~1474) and grows across cells, so batched partial works at ANY
+    # resolution -- no 1024^2 cap. Sizes are still bounded only by GPU memory (caught as FAILED).
+
     rows = []
     for size in sizes:
         image = demo._neutral_image(size)
         mask = demo._full_mask(size)
         ftok = _full_tokens(size)
-        measurable = (size == BUFFER_RES)  # partial only trustworthy where buffer matches
+        # Precompute cached latents ONCE per resolution at batch=1 (the cache path repeats them
+        # per batch item; storing batch-B latents would break the repeat/view math at batch>1).
+        folder = os.path.join(args.out_dir, "cache", f"{size}")
+        cached = _precompute(pipe, image, mask, EditConfig, size=size, steps=args.steps,
+                             prompt=args.edit_prompt, folder=folder)
         for batch in batches:
-            cached = None
-            if measurable:
-                folder = os.path.join(args.out_dir, "cache", f"{size}_{batch}")
-                cached = _precompute(pipe, image, mask, EditConfig, size=size, steps=args.steps,
-                                     batch=batch, prompt=args.edit_prompt, folder=folder)
             full_ms, fstatus = _measure_full(pipe, image, mask, EditConfig, args, size=size, batch=batch)
+            varlen = batch > 1  # batch=1 -> fixed-length (validated); batch>1 -> variable-length
             for cov in coverages:
                 active = _active_tokens(cov, size)
-                if measurable and cached is not None and full_ms and TEXT_SEQLEN + active <= CACHE_BUF:
+                if not full_ms:
+                    rows.append(_mkrow(size, batch, cov, None, None, None, fstatus))
+                elif TEXT_SEQLEN + active > ftok:
+                    # buffer holds full image tokens (edit_config.image_seqlen); text(512)+active must fit
+                    rows.append(_mkrow(size, batch, cov, full_ms, None, None, "n/a (buffer overflow)"))
+                else:
                     partial_ms, pstatus = _measure_partial(
                         pipe, image, mask, EditConfig, args, size=size, batch=batch,
-                        active_tokens=active, cached_latents=cached, folder=folder)
+                        active_tokens=active, cached_latents=cached, folder=folder,
+                        varlen=varlen, max_batch=max_batch)
                     if partial_ms:
                         rows.append(_mkrow(size, batch, cov, full_ms, partial_ms,
                                            full_ms / partial_ms, "ok"))
                     else:
                         rows.append(_mkrow(size, batch, cov, full_ms, None, None, pstatus))
-                else:
-                    # partial not measurable here -> n/a (only 1024^2 matches the cache buffer)
-                    if not full_ms:
-                        status = fstatus
-                    elif TEXT_SEQLEN + active > CACHE_BUF:
-                        status = "n/a (buffer overflow)"
-                    else:
-                        status = "n/a (partial 1024-only)"
-                    rows.append(_mkrow(size, batch, cov, full_ms, None, None, status))
-            tag = "measured" if measurable else "n/a"
             fm = f"{full_ms:.1f}ms" if full_ms else fstatus
-            print(f"[bucket] res={size} B={batch} full={fm} partial={tag} "
-                  f"({len(coverages)} buckets)")
+            ptag = "fixed-len" if not varlen else "varlen"
+            print(f"[bucket] res={size} B={batch} full={fm} partial={ptag} ({len(coverages)} buckets)")
 
     _write_report(rows, csv_path)
 

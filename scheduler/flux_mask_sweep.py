@@ -113,7 +113,9 @@ def _time_forward(pipe, image, mask, edit_config, *, size, steps, strength, batc
     def one():
         torch.cuda.synchronize()
         t0 = time.perf_counter()
-        with contextlib.redirect_stdout(io.StringIO()):  # swallow vendored debug prints
+        with contextlib.redirect_stdout(io.StringIO()):  # swallow vendored debug prints (kept even
+            # under FLUX_DEBUG: the caught traceback prints to stderr, so the failure is still visible
+            # without the per-block shape-print noise burying it).
             pipe(prompt=edit_config.prompt, image=image, mask_image=mask, height=size, width=size,
                  strength=strength, num_inference_steps=steps, guidance_scale=0.0,
                  max_sequence_length=ft.TEXT_SEQLEN, num_images_per_prompt=batch,
